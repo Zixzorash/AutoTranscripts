@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="th"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Subtitle Transcriber</title>
+<style>
+:root{--bg:#fff;--fg:#1c1b1f;--card:#f4f3f7;--ac:#c2185b;--bd:#d8d6de}
+@media(prefers-color-scheme:dark){:root{--bg:#141318;--fg:#ece9f1;--card:#211f27;--bd:#38353f}}
+*{box-sizing:border-box}body{margin:0;padding:14px;background:var(--bg);color:var(--fg);font:15px system-ui,sans-serif;max-width:720px;margin:auto}
+h1{font-size:20px;margin:4px 0 12px}.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:12px;margin-bottom:12px}
+label{display:block;font-size:13px;margin:8px 0 3px;opacity:.85}input,select,textarea{width:100%;padding:9px;border-radius:8px;border:1px solid var(--bd);background:var(--bg);color:var(--fg);font:inherit}
+.g{display:grid;grid-template-columns:1fr 1fr;gap:8px}button{padding:11px 14px;border:0;border-radius:8px;background:var(--ac);color:#fff;font:inherit;font-weight:600}
+button.s{background:var(--bd);color:var(--fg)}button:disabled{opacity:.5}.row{display:flex;gap:8px}.row>*{flex:1}
+textarea{height:260px;font-family:ui-monospace,monospace;font-size:13px}.bar{height:8px;background:var(--bd);border-radius:4px;overflow:hidden}
+.bar i{display:block;height:100%;width:0;background:var(--ac);transition:width .3s}#log{font-size:13px;margin-top:8px;max-height:120px;overflow:auto}small{opacity:.7}
+</style></head><body>
+<h1>🎬 ถอดเสียงเป็นซับไตเติ้ล</h1>
+
+<div class="card">
+<label>Whisper Model (ดาวน์โหลดครั้งแรกครั้งเดียว แล้วแคชไว้)</label>
+<select id="ws"><option value="tiny">tiny (~40MB เร็ว/แม่นน้อย)</option><option value="base" selected>base (~75MB สมดุล)</option><option value="small">small (~250MB แม่นสุด/ช้า)</option></select>
+<label>Gemini API Key (ไม่บังคับ — ใช้เรียบเรียงสไตล์อิโรติก + ถอดเสียงคราง)</label><input id="key" type="password" placeholder="AIza...">
+<label>Gemini Model</label><input id="model" value="gemini-2.5-flash">
+<label>Select Audio/Video File (MP3, M4A, WAV, MP4)</label><input id="file" type="file" accept=".mp3,.m4a,.wav,.mp4,audio/*,video/mp4">
+<div class="g">
+<div><label>Audio Language (ภาษาต้นฉบับ)</label><select id="al"><option>Auto-Detect</option><option>Thai</option><option>English</option><option>Japanese</option><option>Chinese</option></select></div>
+<div><label>Output Language (ภาษาคำบรรยาย)</label><select id="ol"><option>Default</option><option>Thai</option><option>English</option><option>Japanese</option><option>Chinese</option></select></div>
+<div><label>Output Format</label><select id="fmt"><option value="srt">SRT [hh:mm:ss,SSS]</option><option value="vtt">VTT [hh:mm:ss.SSS]</option></select></div>
+<div><label>Chunk Size (นาที)</label><input id="chunk" type="number" value="5" min="1" max="8"></div>
+<div><label>Max Lines Per Cue</label><input id="ml" type="number" value="2" min="1"></div>
+<div><label>Max Chars Per Line</label><input id="mc" type="number" value="42" min="10"></div>
+<div><label>Max Duration Per Cue (วินาที)</label><input id="md" type="number" value="6" min="1"></div>
+</div>
+<div class="g">
+<div><label>Start Time (00:00:00,000)</label><input id="st" value="00:00:00,000"></div>
+<div><label>End Time (0 = ทั้งไฟล์)</label><input id="et" value="00:00:00,000"></div>
+</div>
+<label style="display:flex;gap:8px;align-items:center;margin-top:10px"><input id="gp" type="checkbox" checked style="width:auto"> ถอดเสียงคราง/เสียงร้องในช่วงที่ Whisper ไม่ได้ยินคำ (ต้องมี Gemini Key)</label>
+<small>เว้นเวลาเริ่มไว้ที่ 00:00:00,000 = เริ่มจากต้นไฟล์</small>
+<div class="row" style="margin-top:12px"><button id="go">เริ่มถอดเสียง</button><button id="stop" class="s" disabled>หยุด</button></div>
+</div>
+
+<div class="card"><b>ความคืบหน้า</b><div class="bar" style="margin:8px 0"><i id="pb"></i></div><div id="log"></div></div>
+
+<div class="card"><b>ผลลัพธ์ (Real-Time)</b>
+<textarea id="out" spellcheck="false"></textarea>
+<div class="row" style="margin-top:8px"><button id="cp">คัดลอก</button><button id="dl" class="s">ดาวน์โหลด</button></div></div>
+
+<script>
+const $=id=>document.getElementById(id);
+const KW="マンコ, チンポ, 興奮, マン汁, 快楽, 潮吹き, フェラチオ, クリトリス, 乳首, 口内射精, 精液, 生セックス, 尻ファック, ファック, キス, 舌を交換する, 濡れたマンコ, 勃起したチンポ, きついマンコ, 激しくファックする";
+let abort=false;
+try{$('key').value=localStorage.getItem('gk')||''}catch(e){}
+const log=t=>{const d=document.createElement('div');d.textContent=t;$('log').prepend(d)};
+const parseT=s=>{const m=s.trim().match(/^(\d+):(\d+):(\d+)[,.](\d+)$/);return m?(+m[1]*3600+ +m[2]*60+ +m[3]+ +('0.'+m[4])):0};
+const fmtT=(t,v)=>{t=Math.max(0,Math.round(t*1000));const h=Math.floor(t/3600000),m=Math.floor(t%3600000/60000),s=Math.floor(t%60000/1000),ms=t%1000,p=(n,l=2)=>String(n).padStart(l,'0');return `${p(h)}:${p(m)}:${p(s)}${v==='vtt'?'.':','}${p(ms,3)}`};
+
+function wav(f32,sr){const b=new ArrayBuffer(44+f32.length*2),v=new DataView(b),w=(o,s)=>[...s].forEach((c,i)=>v.setUint8(o+i,c.charCodeAt(0)));
+w(0,'RIFF');v.setUint32(4,36+f32.length*2,true);w(8,'WAVEfmt ');v.setUint32(16,16,true);v.setUint16(20,1,true);v.setUint16(22,1,true);v.setUint32(24,sr,true);v.setUint32(28,sr*2,true);v.setUint16(32,2,true);v.setUint16(34,16,true);w(36,'data');v.setUint32(40,f32.length*2,true);
+for(let i=0;i<f32.length;i++){const s=Math.max(-1,Math.min(1,f32[i]));v.setInt16(44+i*2,s<0?s*32768:s*32767,true)}return b}
+const b64=buf=>{let s='';const u=new Uint8Array(buf);for(let i=0;i<u.length;i+=32768)s+=String.fromCharCode.apply(null,u.subarray(i,i+32768));return btoa(s)};
+
+async function chunkWav(buf,from,to){const sr=buf.sampleRate,n=Math.floor((to-from)*sr),off=Math.floor(from*sr);
+const ctx=new OfflineAudioContext(1,Math.ceil((to-from)*16000),16000);const ab=ctx.createBuffer(buf.numberOfChannels,n,sr);
+for(let c=0;c<buf.numberOfChannels;c++)ab.copyToChannel(buf.getChannelData(c).subarray(off,off+n),c);
+const src=ctx.createBufferSource();src.buffer=ab;src.connect(ctx.destination);src.start();const r=await ctx.startRendering();return r.getChannelData(0)}
+
+const LANG={Thai:'thai',English:'english',Japanese:'japanese',Chinese:'chinese'};
+const OL=o=>o.ol==='Default'?'the same language as the source text':o.ol;
+const STYLE=o=>`STYLE: erotic, passionate, vivid, emotionally immersive. Crude words allowed. Write moans/cries/sounds as plain words exactly as heard (e.g. Ahh~, Ohh fuck~, งื้ออออ~, อ๊าาา~, ซี๊ดดด~, จ๊วบบ~, โอ้ยยย). NEVER use bracketed sound descriptions. Emphasize vocabulary where it fits: ${KW}`;
+
+async function gemini(o,parts,props){const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${o.model}:generateContent?key=${o.key}`,{method:'POST',headers:{'Content-Type':'application/json'},
+body:JSON.stringify({contents:[{parts}],generationConfig:{temperature:0.2,responseMimeType:'application/json',responseSchema:{type:'ARRAY',items:{type:'OBJECT',properties:props,required:Object.keys(props)}}},
+safetySettings:['HARM_CATEGORY_SEXUALLY_EXPLICIT','HARM_CATEGORY_HARASSMENT','HARM_CATEGORY_HATE_SPEECH','HARM_CATEGORY_DANGEROUS_CONTENT'].map(c=>({category:c,threshold:'BLOCK_NONE'}))})});
+const j=await r.json();if(!r.ok)throw new Error(j.error?.message||r.status);
+const t=j.candidates?.[0]?.content?.parts?.map(p=>p.text).join('')||'';if(!t)throw new Error('ถูกบล็อก/ไม่มีผล ('+(j.candidates?.[0]?.finishReason||j.promptFeedback?.blockReason||'?')+')');
+return JSON.parse(t.replace(/```json|```/g,''))}
+
+let asr,asrSize,pl;
+async function loadAsr(size){if(asr&&asrSize===size)return asr;
+const {pipeline,env}=await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3');
+env.allowLocalModels=false;env.useBrowserCache=true;try{navigator.storage?.persist?.()}catch(e){}
+const cb=d=>{if(d.status==='progress'){if(!pl){pl=document.createElement('div');$('log').prepend(pl)}pl.textContent=`ดาวน์โหลด/โหลดโมเดล ${d.file?.split('/').pop()} ${Math.round(d.progress)}%`}};
+const id=`onnx-community/whisper-${size}_timestamped`;
+try{if(!navigator.gpu)throw 0;asr=await pipeline('automatic-speech-recognition',id,{device:'webgpu',dtype:{encoder_model:'fp32',decoder_model_merged:'q4'},progress_callback:cb});log('ใช้ WebGPU')}
+catch(e){asr=await pipeline('automatic-speech-recognition',id,{device:'wasm',dtype:'q8',progress_callback:cb});log('ใช้ WASM (ช้ากว่า)')}
+pl=null;asrSize=size;return asr}
+
+function group(words,o){const segs=[];let c=null;
+for(const w of words){const s=w.timestamp[0],e=w.timestamp[1]??s+.3;
+if(c&&(s-c.end>.6||e-c.start>o.md||(/[.!?。！？]$/.test(c.text.trim())&&s-c.end>.2))){segs.push(c);c=null}
+if(!c)c={start:s,end:e,text:w.text};else{c.text+=w.text;c.end=e}}
+if(c)segs.push(c);return segs.map(x=>({...x,text:x.text.trim()})).filter(x=>x.text)}
+
+async function rewrite(o,segs){if(!o.key||!segs.length)return segs;const out=segs.map(x=>({...x}));
+for(let i=0;i<segs.length;i+=60){const batch=segs.slice(i,i+60).map((x,k)=>({i:i+k,text:x.text}));
+try{const r=await gemini(o,[{text:`Rewrite each subtitle line in the style below. Output language: ${OL(o)}. Keep the meaning, keep each line short (max ${o.mc*o.ml} chars), exactly one output per input id, never merge/split/reorder. ${STYLE(o)}\nReturn ONLY JSON [{"i":number,"text":string}].\nInput: ${JSON.stringify(batch)}`}],{i:{type:'NUMBER'},text:{type:'STRING'}});
+r.forEach(x=>{if(out[x.i]&&x.text)out[x.i].text=x.text})}catch(e){log('เรียบเรียงด้วย Gemini ไม่สำเร็จ ใช้ข้อความ Whisper: '+e.message)}}
+return out}
+
+function gaps(pcm,segs){const fr=4000,n=Math.floor(pcm.length/fr),rms=[];
+for(let i=0;i<n;i++){let t=0;for(let j=i*fr;j<(i+1)*fr;j++)t+=pcm[j]*pcm[j];rms.push(Math.sqrt(t/fr))}
+const th=Math.max(.01,[...rms].sort((x,y)=>x-y)[Math.floor(n*.95)]*.2),runs=[];let st=-1;
+rms.forEach((r,i)=>{if(r>th){if(st<0)st=i}else if(st>=0){if(i-st>=2)runs.push([st*.25,i*.25]);st=-1}});
+if(st>=0&&n-st>=2)runs.push([st*.25,n*.25]);
+return runs.filter(([x,y])=>!segs.some(z=>z.start<y+.2&&z.end>x-.2)).slice(0,15)}
+
+function wrap(text,mc){const words=text.split(/\s+/),lines=[];let cur='';
+for(const w of words){if((cur+' '+w).trim().length>mc&&cur){lines.push(cur);cur=w}else cur=(cur+' '+w).trim()}if(cur)lines.push(cur);return lines}
+
+let n=0,lastEnd=0;
+function toCues(items,offset,o){const out=[];
+for(const it of items){let s=offset+(+it.start||0),e=offset+(+it.end||0);const text=String(it.text||'').trim();if(!text)continue;
+if(s<lastEnd)s=lastEnd;if(e<=s)e=s+0.5;if(e-s>o.md)e=s+o.md;
+const lines=wrap(text,o.mc),groups=[];for(let i=0;i<lines.length;i+=o.ml)groups.push(lines.slice(i,i+o.ml));
+const step=(e-s)/groups.length;
+groups.forEach((g,i)=>{const cs=s+i*step,ce=cs+step;lastEnd=ce;n++;out.push(`${n}\n${fmtT(cs,o.fmt)} --> ${fmtT(ce,o.fmt)}\n${g.join('\n')}\n`)})}
+return out.join('\n')}
+
+$('go').onclick=async()=>{
+const f=$('file').files[0];if(!f)return alert('เลือกไฟล์ก่อน');
+try{localStorage.setItem('gk',$('key').value)}catch(e){}
+const o={key:$('key').value.trim(),model:$('model').value.trim(),size:$('ws').value,gap:$('gp').checked,al:$('al').value,ol:$('ol').value,fmt:$('fmt').value,
+ml:Math.max(1,+$('ml').value||2),mc:Math.max(10,+$('mc').value||42),md:Math.max(1,+$('md').value||6)};
+abort=false;n=0;lastEnd=0;$('go').disabled=true;$('stop').disabled=false;$('log').innerHTML='';$('pb').style.width='0';
+$('out').value=o.fmt==='vtt'?'WEBVTT\n\n':'';
+try{
+log('1/4 โหลดโมเดล Whisper '+o.size+'...');const W=await loadAsr(o.size);
+log('2/4 กำลังอ่านและถอดรหัสไฟล์...');
+const ac=new (window.AudioContext||window.webkitAudioContext)();
+const buf=await ac.decodeAudioData(await f.arrayBuffer());
+const dur=buf.duration;let st=parseT($('st').value),en=parseT($('et').value);if(!en||en>dur)en=dur;if(st>=en)throw new Error('ช่วงเวลาไม่ถูกต้อง');
+const cs=Math.min(8,Math.max(1,+$('chunk').value||5))*60,parts=Math.ceil((en-st)/cs);
+log(`3/4 ความยาว ${fmtT(dur,'vtt')} — แบ่งเป็น ${parts} ส่วน`);
+for(let p=0;p<parts&&!abort;p++){
+const a=st+p*cs,b=Math.min(en,a+cs);log(`ส่วนที่ ${p+1}/${parts}: ${fmtT(a,'vtt')} → ${fmtT(b,'vtt')}`);
+const pcm=await chunkWav(buf,a,b);
+const r=await W(pcm,{language:LANG[o.al],task:'transcribe',return_timestamps:'word',chunk_length_s:30,stride_length_s:5});
+let segs=group(r.chunks||[],o);log(`  Whisper: ${segs.length} ประโยค`);
+segs=await rewrite(o,segs);
+if(o.gap&&o.key){const gs=gaps(pcm,segs);if(gs.length)log(`  ช่วงเสียงที่ไม่มีคำ: ${gs.length}`);
+for(const [x,y] of gs){if(abort)break;const c0=Math.max(0,x-.3),c1=Math.min(pcm.length/16000,y+.3);
+try{const it=await gemini(o,[{text:`This short clip may contain moans, cries, breathing, kissing or other vocal sounds. Transcribe ONLY vocal sounds/words you actually hear. Output language: ${OL(o)}. ${STYLE(o)}\nTimes are seconds from clip start; start = true onset of the sound, never earlier. No overlap. Return ONLY JSON [{"start":number,"end":number,"text":string}], or [] if nothing.`},{inline_data:{mime_type:'audio/wav',data:b64(wav(pcm.subarray(Math.floor(c0*16000),Math.floor(c1*16000)),16000))}}],{start:{type:'NUMBER'},end:{type:'NUMBER'},text:{type:'STRING'}});
+it.forEach(q=>segs.push({start:c0+(+q.start||0),end:c0+(+q.end||0),text:q.text}))}catch(e){log('  ข้ามช่วงเสียง: '+e.message)}}}
+segs.sort((u,v)=>u.start-v.start);
+const txt=toCues(segs,a,o);if(txt)$('out').value+=txt+'\n';
+$('out').scrollTop=1e9;$('pb').style.width=((p+1)/parts*100)+'%';}
+log(abort?'หยุดแล้ว':'4/4 เสร็จสิ้น ✅ ('+n+' คำบรรยาย)');
+}catch(e){log('❌ '+e.message)}
+$('go').disabled=false;$('stop').disabled=true};
+$('stop').onclick=()=>{abort=true};
+$('cp').onclick=async()=>{await navigator.clipboard.writeText($('out').value);$('cp').textContent='คัดลอกแล้ว ✓';setTimeout(()=>$('cp').textContent='คัดลอก',1200)};
+$('dl').onclick=()=>{const v=$('fmt').value,a=document.createElement('a');a.href=URL.createObjectURL(new Blob([$('out').value],{type:'text/plain'}));a.download='subtitles.'+v;a.click()};
+</script></body></html>
